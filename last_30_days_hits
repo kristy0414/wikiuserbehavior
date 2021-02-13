@@ -1,0 +1,147 @@
+<JINJA>
+{%- macro is_present(val) -%}
+{{1 if val not in ('', "''", '__ALL__', "'__ALL__'",'All', "'All'")}}
+{%- endmacro %}
+WITH get_time AS (
+    SELECT
+        ds,
+        userid,
+        time_spent_id,
+        FROM_UNIXTIME(start_time) AS start_time,
+        FROM_UNIXTIME(end_time) AS end_time,
+        page_type,
+        page_type_minor,
+        endpoint,
+        uri_path,
+        uri_path_sanitized,
+        LOWER(REGEXP_REPLACE(REPLACE(uri_path, '/intern/wiki/', ''), '/$', '')) AS short_path,
+        FROM_UNIXTIME(end_time) - FROM_UNIXTIME(start_time) AS time_on_page,
+        employee_department
+    FROM time_spent_sessionized_employees_wide:measurementsystems
+    WHERE
+        1 = 1
+        {% if is_present("$tag$") %}
+            AND uri_path LIKE CONCAT('/intern/wiki/', '$tag$', '%')
+        {% endif %}
+        AND ds BETWEEN '<DATEID-29>' AND '<DATEID>'
+
+),
+group_by_timeid AS (
+    SELECT
+        ds,
+        userid,
+        time_spent_id,
+        short_path,
+        SUM(
+            HOUR(time_on_page) * 3600 + MINUTE(time_on_page) * 60 + SECOND(time_on_page)
+        ) AS time_on_page
+    FROM get_time
+    GROUP BY
+        1, 2, 3, 4
+),
+wiki AS (
+    SELECT
+        ds,
+        LOWER(page_path) AS short_path,
+        page_title
+    FROM wiki_info:infrastructure
+    WHERE
+        1 = 1
+        AND ds BETWEEN '<DATEID-29>' AND '<DATEID>'
+),
+employee AS (
+    SELECT
+        ds,
+        personal_fbid,
+        pillar_name,
+        team_name,
+        team_group_name,
+        department_name,
+        department_group_name
+    FROM d_employee_plus:hr
+    WHERE
+        1 = 1
+        AND is_active
+        AND ds = '<LATEST_DS:d_employee_plus:hr>'
+),
+joined AS (
+    SELECT DISTINCT
+        a.ds,
+        a.userid,
+        a.time_spent_id,
+        a.short_path,
+        a.time_on_page,
+        b.page_title,
+        c.team_name,
+        c.team_group_name,
+        c.department_name,
+        CASE
+            WHEN team_group_name = 'EIS Core Interfaces & Data Services' THEN 'Yes'
+            ELSE 'No'
+        END AS is_CIDS
+    FROM group_by_timeid AS a
+    LEFT JOIN wiki AS b
+        ON a.short_path = b.short_path
+    JOIN employee AS c
+        ON a.userid = c.personal_fbid
+),
+final AS (
+    SELECT
+        page_title,
+        is_CIDS,
+        COUNT(*) AS hits,
+        ROUND(
+            COUNT(*) * 1.0 / SUM(COUNT(*)) OVER (
+                PARTITION BY
+                    page_title
+            ) * 1.0,
+            4
+        ) * 100 AS pct_group,
+        SUM(COUNT(*)) OVER (
+            PARTITION BY
+                page_title
+        ) AS sum_page_hits
+    FROM joined
+    GROUP BY
+        page_title,
+        is_CIDS
+    ORDER BY
+        page_title,
+        is_CIDS
+),
+parallel AS (
+    SELECT
+        a.page_title AS page_title,
+        a.is_CIDS AS y_is_CIDS,
+        a.hits AS y_hits,
+        a.pct_group AS y_pct_group,
+        b.is_CIDS AS n_is_CIDS,
+        b.hits AS n_hits,
+        b.pct_group AS n_pct_group,
+        a.sum_page_hits AS sum_page_hits
+    FROM final AS a
+    JOIN final AS b
+        ON a.page_title = b.page_title
+        AND a.is_CIDS != b.is_CIDS
+        AND a.is_CIDS = 'Yes'
+)
+{% if "$scope$" == 'ALL' %}
+    SELECT
+        *
+    FROM parallel
+{% endif %}
+{% if "$scope$" == 'Yes' %}
+    SELECT
+        *
+    FROM final
+    WHERE
+        is_CIDS = 'Yes'
+{% endif %}
+{% if "$scope$" == 'No' %}
+    SELECT
+        *
+    FROM final
+    WHERE
+        is_CIDS = 'No'
+{% endif %}
+</JINJA>
