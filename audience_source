@@ -1,0 +1,114 @@
+<JINJA>
+{%- macro is_present(val) -%}
+{{1 if val not in ('', "''", '__ALL__', "'__ALL__'",'All', "'All'")}}
+{%- endmacro %}
+WITH raw_data AS (
+    SELECT
+        ds,
+        userid,
+        FROM_UNIXTIME(event_time) as event_time,
+        page_uri_path,
+        LOWER(REGEXP_REPLACE(REPLACE(page_uri_path, '/intern/wiki/', ''), '/$', ''))
+            AS short_path,
+        referrer_controller_name,
+        page_referrer_path,
+        page_referrer,
+        referrer_entrypoint
+    FROM vitals_event:infrastructure
+    WHERE
+        event_name = 'Page Load'
+        AND ds BETWEEN '<DATEID-29>' AND '<DATEID>'
+        {% if is_present("$tag1$") %}
+            AND page_uri_path LIKE CONCAT('/intern/wiki/', '$tag1$', '%')
+        {% endif %}
+),
+wiki AS (
+    SELECT
+        ds,
+        LOWER(page_path) AS short_path,
+        page_title
+    FROM wiki_info:infrastructure
+    WHERE
+        1 = 1
+        AND ds BETWEEN '<DATEID-29>' AND '<DATEID>'
+
+),
+employee AS (
+    SELECT
+        ds,
+        personal_fbid,
+        preferred_name,
+        team_name,
+        team_group_name,
+        department_name,
+        department_group_name
+    FROM d_employee_plus:hr
+    WHERE
+        1 = 1
+        AND is_active
+        AND ds = '<LATEST_DS:d_employee_plus:hr>'
+),
+final AS (
+    SELECT
+    distinct
+        a.userid,
+        a.ds,
+        a.event_time,
+        a.page_uri_path,
+        b.page_title,
+        CASE
+            WHEN c.team_group_name = 'EIS Core Interfaces & Data Services' THEN 'Yes'
+            ELSE 'No'
+        END AS is_CIDS,
+        a.page_referrer,
+        CASE
+            WHEN (a.referrer_entrypoint IS NULL AND page_referrer_path='') THEN 'null'
+            WHEN (a.referrer_entrypoint IS NULL AND page_referrer_path IS NOT NULL)
+                THEN 'internal wiki'
+            WHEN a.referrer_entrypoint IS NOT NULL THEN a.referrer_entrypoint
+        END AS source_type
+    FROM raw_data AS A
+    JOIN wiki AS b
+        ON a.short_path = b.short_path
+    JOIN employee AS c
+        ON a.userid = c.personal_fbid
+)
+{% if "$scope$" == 'ALL' %}
+    SELECT
+        page_title,
+        is_CIDS,
+        page_referrer,
+        source_type,
+        count(*) as source_count
+    FROM final
+    group by 1,2,3,4
+    order by 1,2,3,4
+{% endif %}
+{% if "$scope$" == 'Yes' %}
+    SELECT
+        page_title,
+        is_CIDS,
+        page_referrer,
+        source_type,
+        count(*) as source_count
+    FROM final
+    WHERE
+        is_CIDS = 'Yes'
+    group by 1,2,3,4
+    order by 1,2,3,4
+{% endif %}
+{% if "$scope$" == 'No' %}
+    SELECT
+        page_title,
+        is_CIDS,
+        page_referrer,
+        source_type,
+        count(*) as source_count
+    FROM final
+    WHERE
+        is_CIDS = 'No'
+    group by 1,2,3,4
+    order by 1,2,3,4
+{% endif %}
+
+</JINJA>
